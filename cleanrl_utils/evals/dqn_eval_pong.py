@@ -4,6 +4,8 @@ from typing import Callable
 import gymnasium as gym
 import numpy as np
 import torch
+import statistics
+
 
 def save_envs(envs):
     return [env.unwrapped.ale.cloneSystemState() for env in envs]
@@ -12,13 +14,37 @@ def restore_envs(env_id, saved_env_states, idx, capture_video, run_name):
     return gym.vector.SyncVectorEnv([restore_env(env_id, saved_env_state, idx, capture_video, run_name) for 
             saved_env_state in saved_env_states])
 
-def get_actions(q_values):
-    print(q_values)
-    test = torch.topk(q_values, k=4)
-    print(test)
-    print(torch.argmax(q_values, dim=1).cpu().numpy())
-    return torch.argmax(q_values, dim=1).cpu().numpy()
+# get the action from the q_values
+# pick either the best action (as judged by the Q-network) with prob=best_action_prob, 
+# or second best action with prob=(1 - best_action_prob)
+def get_actions(q_values, best_action_prob):
+    top_k = torch.topk(q_values, k=2).indices.cpu().numpy().squeeze()
+    idx = 1 if (random.random() > best_action_prob) else 0
+    return [top_k[idx]]
 
+def cnn_similarity(cnn_list, num_tests=30):
+    n = len(cnn_list)
+    # grab two consecutive features. we expect them to be close
+    consecutive_vals = []
+    print("------------ CONSECUTIVE FARMES TEST ------------")
+    for i in range(num_tests):
+        idx = random.randint(0, n-2)
+        cos = torch.nn.CosineSimilarity()
+        sim = cos(cnn_list[idx], cnn_list[idx+1]).item()
+        consecutive_vals.append(sim)
+        print(f"Cosine similarity between feature at index {idx} and index {idx+1}: {sim}")
+    print(f"Average cosine similarity between consecutive frames: {statistics.mean(consecutive_vals)}")
+    # grab two random features. we expect them to be further
+    random_vals = []
+    print("------------ RANDOM FRAMES TEST ------------")
+    for i in range(num_tests):
+        idx1 = random.randint(0, n-1)
+        idx2 = random.randint(0, n-1)
+        cos = torch.nn.CosineSimilarity()
+        sim = cos(cnn_list[idx1], cnn_list[idx2]).item()
+        random_vals.append(sim)
+        print(f"Cosine similarity between feature at index {idx1} and index {idx2}: {sim}")
+    print(f"Average cosine similarity between random frames: {statistics.mean(random_vals)}")
 
 
 
@@ -41,18 +67,16 @@ def evaluate(
 
     obs, _ = envs.reset()
     episodic_returns = []
+    cnn_list = []
+
     i = 0
     while len(episodic_returns) < eval_episodes:
         i += 1
-        # if random.random() < epsilon:
-        #     actions = np.array([envs.single_action_space.sample() for _ in range(envs.num_envs)])
-        # else:
         q_values = model(torch.Tensor(obs).to(device))
-        actions = get_actions(q_values)
-        if i == 10:
-            return
-        # print(actions)
+        actions = get_actions(q_values, best_action_prob=1.0)
         cnn_fts = activation['cnn_features']
+        if i > 500 and i < 1000:
+            cnn_list.append(cnn_fts.detach().cpu().clone())
         next_obs, _, _, _, infos = envs.step(actions)
         if "final_info" in infos:
             for info in infos["final_info"]:
@@ -66,7 +90,8 @@ def evaluate(
         #     envs.close()
         #     envs = restore_envs(env_id, saved_envs, 0, capture_video, run_name)
         obs = next_obs
-
+    
+    cnn_similarity(cnn_list)
     return episodic_returns
 
 
