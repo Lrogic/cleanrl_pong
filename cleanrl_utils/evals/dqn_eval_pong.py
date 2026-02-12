@@ -12,6 +12,7 @@ import sys
 from dataclasses import dataclass
 from collections import defaultdict
 import networkx as nx
+from tqdm import tqdm
 
 def save_envs(envs):
     return [env.unwrapped.ale.cloneSystemState() for env in envs]
@@ -70,7 +71,7 @@ class RRTGraph:
         self.nodes_data = {}  # node_id -> RRTNode
         self.next_node_id = 0
         self.device = device
-        self.cosine_sim_threshold = cosine_sim_threshold
+        # self.cosine_sim_threshold = cosine_sim_threshold
         self.cosine_sim = torch.nn.CosineSimilarity(dim=1)
     
     def add_node(self, obs, cnn_features, ale_state):
@@ -80,7 +81,7 @@ class RRTGraph:
             node_id=node_id,
             obs=obs.copy() if isinstance(obs, np.ndarray) else obs,
             cnn_features=cnn_features.detach().cpu().clone(),
-            ale_state=ale_state
+            ale_state=ale_state # do we have to copy this?
         )
         self.nodes_data[node_id] = node
         self.graph.add_node(node_id)
@@ -171,7 +172,7 @@ def run_rrt_exploration(
     root_id = graph.add_node(obs[0], cnn_fts.squeeze(0), saved_state)
     print(f"[RRT] Added root node: {root_id}")
     
-    for iteration in range(num_iterations):
+    for iteration in tqdm(range(num_iterations)):
         # Sample a random state
         obs_random, _ = envs.reset()
         q_values_random = model(torch.Tensor(obs_random).to(device))
@@ -231,6 +232,7 @@ def evaluate(
     epsilon: float = 0.05,
     capture_video: bool = True,
     do_frame_cosine_similarity: bool = False,
+    run_rrt: bool = False
 ):
     envs = gym.vector.SyncVectorEnv([make_env(env_id, 0, 0, capture_video, run_name)])
     model = Model(envs).to(device)
@@ -242,13 +244,15 @@ def evaluate(
     obs, _ = envs.reset()
     episodic_returns = []
     cnn_list = []
-    run_rrt_exploration(model,
-        envs,
-        device,
-        num_iterations = 100,
-        expansion_steps = 1,
-        best_action_prob = 1.0)
-    return
+
+    if run_rrt:
+        run_rrt_exploration(model,
+            envs,
+            device,
+            num_iterations = 100,
+            expansion_steps = 1,
+            best_action_prob = 1.0)
+        return
 
     i = 0
     while len(episodic_returns) < eval_episodes:
@@ -291,7 +295,7 @@ def evaluate(
         obs = next_obs
     
     if do_frame_cosine_similarity:
-        cnn_similarity(cnn_list)
+        cnn_similarity(cnn_list, num_tests=100)
     return episodic_returns
 
 
@@ -311,5 +315,6 @@ if __name__ == "__main__":
         Model=QNetwork,
         device="cpu",
         capture_video=False,
-        do_frame_cosine_similarity=False
+        do_frame_cosine_similarity=True,
+        run_rrt=False
     )
