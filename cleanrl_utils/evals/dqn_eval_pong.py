@@ -11,11 +11,13 @@ import pickle
 import sys
 from dataclasses import dataclass
 from collections import defaultdict
+
+import matplotlib.pyplot as plt
 import networkx as nx
 from tqdm import tqdm
-
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+import os
 
 def save_envs(envs):
     return [env.unwrapped.ale.cloneSystemState() for env in envs]
@@ -229,24 +231,94 @@ def cnn_similarity(cnn_list, num_tests=30):
 def pca_trajectories(trajs, n_components=2):
     # trajs: list of trajectories, each is list of (D,) arrays
     X = np.concatenate([np.stack(traj, axis=0) for traj in trajs if len(traj) > 0], axis=0)  # (N, D)
-
     scaler = StandardScaler()
     Xs = scaler.fit_transform(X)
 
     pca = PCA(n_components=n_components)
     Z = pca.fit_transform(Xs)
+    
+    # Calculate reconstruction error (MSE on the scaled inputs)
+    X_reconstructed = pca.inverse_transform(Z)
+    reconstruction_error = np.mean((Xs - X_reconstructed) ** 2)
 
     print("explained_variance_ratio_", pca.explained_variance_ratio_)
-    print("singular_values_", pca.singular_values_)
+    # print("singular_values_", pca.singular_values_)
+    print("reconstruction_error_", reconstruction_error)
 
     # split back into trajectories
     out = []
     idx = 0
+    # Also compute L2 norms between consecutive original vectors for each trajectory
+    norms_per_traj = []
     for traj in trajs:
         T = len(traj)
         out.append(Z[idx:idx+T])
         idx += T
-    return out
+
+        # compute L2 norms on the original vectors (not PCA-projected)
+        if T > 1:
+            arr = np.stack(traj, axis=0)
+            diffs = arr[1:] - arr[:-1]
+            norms = np.linalg.norm(diffs, axis=1)
+            norms_per_traj.append(norms)
+        else:
+            norms_per_traj.append(np.array([]))
+
+    return out, reconstruction_error, norms_per_traj
+
+
+def plot_pca_trajectories(pca_traj, reconstruction_error=None, output_dir="pca_plots",
+                          num_states_to_plot=10, l2_norms=None):
+    # NOTE: This function expects a single PCA trajectory (an (T,2) array) as
+    # `pca_traj`. If you have multiple trajectories (a list), pass a single
+    # element (e.g. `pca_trajs[0]`) when calling this function.
+    os.makedirs(output_dir, exist_ok=True)
+    plt.figure(figsize=(8, 6))
+
+    # plot only the first 10 states
+    traj = np.array(pca_traj)[:num_states_to_plot]
+    
+    # Plot points at each timestep
+    plt.scatter(traj[:, 0], traj[:, 1], s=50, alpha=0.7, zorder=5)
+    
+    # Highlight the first point with a different color
+    plt.scatter(traj[0, 0], traj[0, 1], s=100, color='green', alpha=0.9, zorder=6, label='Start')
+    # Highlight the last point with a different color
+    plt.scatter(traj[-1, 0], traj[-1, 1], s=100, color='red', alpha=0.9, zorder=6, label='End')
+    
+    # L2 norms for this trajectory (if provided)
+    l2_first = np.array(l2_norms) if l2_norms is not None else None
+
+    # Add arrows between consecutive points
+    for i in range(len(traj) - 1):
+        x_start, y_start = traj[i, 0], traj[i, 1]
+        x_end, y_end = traj[i + 1, 0], traj[i + 1, 1]
+        dx = x_end - x_start
+        dy = y_end - y_start
+        plt.arrow(x_start, y_start, dx, dy, 
+                  head_width=0.05, head_length=0.05, fc='black', ec='black', alpha=0.6, zorder=4)
+        
+        # Add label at midpoint of arrow: use L2 norm if available, otherwise index
+        mid_x = x_start + dx / 2
+        mid_y = y_start + dy / 2
+        if l2_first is not None and i < len(l2_first):
+            label_text = f"{l2_first[i]:.1f}"
+        else:
+            label_text = str(i+1)
+        plt.text(mid_x, mid_y, label_text, fontsize=8, ha='center', va='center', 
+                bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
+    
+    title = "PCA of CNN Feature Trajectories"
+    if reconstruction_error is not None:
+        title += f"\nReconstruction Error: {reconstruction_error:.4f}"
+    
+    plt.title(title)
+    plt.xlabel("Principal Component 1")
+    plt.ylabel("Principal Component 2")
+    plt.legend()
+    plt.savefig(os.path.join(output_dir, "pca_trajectory.png"))
+    plt.grid()
+    plt.show()
 
 
 
@@ -310,7 +382,10 @@ def evaluate(
     
     if do_frame_cosine_similarity:
         cnn_similarity(cnn_list, num_tests=100)
-    pca_trajectories(trajectories)
+    pca_trajs, reconstruction_error, l2_norms = pca_trajectories(trajectories, n_components=2)
+    # Pass a single PCA trajectory and its corresponding L2 norms to the plot
+    single_l2 = l2_norms[0] if (l2_norms is not None and len(l2_norms) > 0) else None
+    plot_pca_trajectories(pca_trajs[0], reconstruction_error=reconstruction_error, l2_norms=single_l2)
     return episodic_returns
 
 
