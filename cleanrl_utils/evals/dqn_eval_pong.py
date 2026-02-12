@@ -14,6 +14,9 @@ from collections import defaultdict
 import networkx as nx
 from tqdm import tqdm
 
+from sklearn.decomposition import PCA
+from sklearn.preprocessing import StandardScaler
+
 def save_envs(envs):
     return [env.unwrapped.ale.cloneSystemState() for env in envs]
 
@@ -28,30 +31,6 @@ def get_actions(q_values, best_action_prob):
     top_k = torch.topk(q_values, k=2).indices.cpu().numpy().squeeze()
     idx = 1 if (random.random() > best_action_prob) else 0
     return [top_k[idx]]
-
-def cnn_similarity(cnn_list, num_tests=30):
-    n = len(cnn_list)
-    # grab two consecutive features. we expect them to be close
-    consecutive_vals = []
-    print("------------ CONSECUTIVE FARMES TEST ------------")
-    for i in range(num_tests):
-        idx = random.randint(0, n-2)
-        cos = torch.nn.CosineSimilarity()
-        sim = cos(cnn_list[idx], cnn_list[idx+1]).item()
-        consecutive_vals.append(sim)
-        # print(f"Cosine similarity between feature at index {idx} and index {idx+1}: {sim}")
-    print(f"Average cosine similarity between consecutive frames: {statistics.mean(consecutive_vals)}")
-    # grab two random features. we expect them to be further
-    random_vals = []
-    print("------------ RANDOM FRAMES TEST ------------")
-    for i in range(num_tests):
-        idx1 = random.randint(0, n-1)
-        idx2 = random.randint(0, n-1)
-        cos = torch.nn.CosineSimilarity()
-        sim = cos(cnn_list[idx1], cnn_list[idx2]).item()
-        random_vals.append(sim)
-        # print(f"Cosine similarity between feature at index {idx1} and index {idx2}: {sim}")
-    print(f"Average cosine similarity between random frames: {statistics.mean(random_vals)}")
 
 
 @dataclass
@@ -220,6 +199,56 @@ def run_rrt_exploration(
     return graph
 
 
+def cnn_similarity(cnn_list, num_tests=30):
+    n = len(cnn_list)
+    # grab two consecutive features. we expect them to be close
+    consecutive_vals = []
+    print("------------ CONSECUTIVE FARMES TEST ------------")
+    for i in range(num_tests):
+        idx = random.randint(0, n-2)
+        cos = torch.nn.CosineSimilarity()
+        sim = cos(cnn_list[idx], cnn_list[idx+1]).item()
+        consecutive_vals.append(sim)
+        # print(f"Cosine similarity between feature at index {idx} and index {idx+1}: {sim}")
+    print(f"Average cosine similarity between consecutive frames: {statistics.mean(consecutive_vals)}")
+    # grab two random features. we expect them to be further
+    random_vals = []
+    print("------------ RANDOM FRAMES TEST ------------")
+    for i in range(num_tests):
+        idx1 = random.randint(0, n-1)
+        idx2 = random.randint(0, n-1)
+        cos = torch.nn.CosineSimilarity()
+        sim = cos(cnn_list[idx1], cnn_list[idx2]).item()
+        random_vals.append(sim)
+        # print(f"Cosine similarity between feature at index {idx1} and index {idx2}: {sim}")
+    print(f"Average cosine similarity between random frames: {statistics.mean(random_vals)}")
+
+
+
+
+def pca_trajectories(trajs, n_components=2):
+    # trajs: list of trajectories, each is list of (D,) arrays
+    X = np.concatenate([np.stack(traj, axis=0) for traj in trajs if len(traj) > 0], axis=0)  # (N, D)
+
+    scaler = StandardScaler()
+    Xs = scaler.fit_transform(X)
+
+    pca = PCA(n_components=n_components)
+    Z = pca.fit_transform(Xs)
+
+    print("explained_variance_ratio_", pca.explained_variance_ratio_)
+    print("singular_values_", pca.singular_values_)
+
+    # split back into trajectories
+    out = []
+    idx = 0
+    for traj in trajs:
+        T = len(traj)
+        out.append(Z[idx:idx+T])
+        idx += T
+    return out
+
+
 
 def evaluate(
     model_path: str,
@@ -238,7 +267,7 @@ def evaluate(
     model = Model(envs).to(device)
     model.load_state_dict(torch.load(model_path, map_location=device))
     model.eval()
-    model.network[8].register_forward_hook(get_activation('cnn_features'))
+    model.network[7].register_forward_hook(get_activation('cnn_features'))
 
 
     obs, _ = envs.reset()
@@ -253,49 +282,35 @@ def evaluate(
             expansion_steps = 1,
             best_action_prob = 1.0)
         return
+    
+    trajectories = []
+    cur_traj = []
 
-    i = 0
     while len(episodic_returns) < eval_episodes:
-        i += 1
         q_values = model(torch.Tensor(obs).to(device))
         actions = get_actions(q_values, best_action_prob=1.0)
         cnn_fts = activation['cnn_features']
-        if do_frame_cosine_similarity and (len(episodic_returns) == 0) and i > 500 and i < 1000:
-            cnn_list.append(cnn_fts.detach().cpu().clone())
-        next_obs, _, _, _, infos = envs.step(actions)
-        # pprint(vars(envs.envs[0]))
-        # return
+        x = cnn_fts
+        y = cnn_fts.detach().cpu().clone().numpy().squeeze()
+        cur_traj.append(y)
+        # if do_frame_cosine_similarity and (len(episodic_returns) == 0) and i > 500 and i < 1000:
+        #     cnn_list.append(cnn_fts.detach().cpu().clone())
+        # rewards are either -1, 0, 1
+        next_obs, rewards, terminations, truncations, infos = envs.step(actions)
+        if rewards[0] != 0:
+            trajectories.append(cur_traj[:])
+            cur_traj = []
         if "final_info" in infos:
             for info in infos["final_info"]:
                 if "episode" not in info:
                     continue
                 print(f"eval_episode={len(episodic_returns)}, episodic_return={info['episode']['r']}")
                 episodic_returns += [info["episode"]["r"]]
-        # if i == 500:
-        #     saved_envs = save_envs(envs.envs)
-        #     envs2 = restore_envs(env_id, saved_envs, 0, capture_video, run_name)
-        #     envs3 = copy.deepcopy(envs)
-        #     envs4 = copy.deepcopy(envs.unwrapped)
-
-        #     test1 = pickle.dumps(envs.envs)
-        #     print(sys.getsizeof(test1))
-        #     test2 = pickle.dumps(envs2.envs)
-        #     print(sys.getsizeof(test2))
-        #     test3 = pickle.dumps(envs3.envs)
-        #     print(sys.getsizeof(test3))
-        #     test4 = pickle.dumps(envs4.envs)
-        #     print(sys.getsizeof(test4))
-
-        #     x = 1
-        # if i == 1000:
-        #     print("saving and reloading envs")
-        #     saved_envs = save_envs(envs.envs)
-        #     envs.close()
-        #     envs = restore_envs(env_id, saved_envs, 0, capture_video, run_name)
         obs = next_obs
     
     if do_frame_cosine_similarity:
         cnn_similarity(cnn_list, num_tests=100)
+    pca_trajectories(trajectories)
     return episodic_returns
 
 
@@ -315,6 +330,6 @@ if __name__ == "__main__":
         Model=QNetwork,
         device="cpu",
         capture_video=False,
-        do_frame_cosine_similarity=True,
+        do_frame_cosine_similarity=False,
         run_rrt=False
     )
