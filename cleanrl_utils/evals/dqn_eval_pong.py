@@ -503,7 +503,8 @@ if __name__ == "__main__":
 
     from cleanrl.dqn_atari import QNetwork, make_env, get_activation, activation, restore_env
 
-    model_path = hf_hub_download(repo_id="cleanrl/PongNoFrameskip-v4-dqn_atari-seed1", filename="dqn_atari.cleanrl_model")
+    # model_path = hf_hub_download(repo_id="cleanrl/PongNoFrameskip-v4-dqn_atari-seed1", filename="dqn_atari.cleanrl_model")
+    model_path = hf_hub_download(repo_id="cleanrl/PongNoFrameskip-v4-dqn_atari-seed1", filename="dqn_atari.cleanrl_model", local_files_only=True)
     
     evaluate(
         model_path,
