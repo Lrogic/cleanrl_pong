@@ -19,6 +19,8 @@ from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
 import os
 
+from cleanrl_utils.atari_wrappers import SaveOriginalObservation
+
 def save_envs(envs):
     return [env.unwrapped.ale.cloneSystemState() for env in envs]
 
@@ -268,26 +270,43 @@ def pca_trajectories(trajs, n_components=2):
 
 
 def plot_pca_trajectories(pca_traj, reconstruction_error=None, output_dir="pca_plots",
-                          num_states_to_plot=10, l2_norms=None):
+                          num_frames_to_plot=10, l2_norms=None, frames=None):
     # NOTE: This function expects a single PCA trajectory (an (T,2) array) as
     # `pca_traj`. If you have multiple trajectories (a list), pass a single
     # element (e.g. `pca_trajs[0]`) when calling this function.
+    #
+    # `num_frames_to_plot` controls how many points/images to display. If
+    # positive, the first `num_frames_to_plot` states are shown. If negative,
+    # the last `abs(num_frames_to_plot)` states are shown (e.g. -10 -> last 10).
     os.makedirs(output_dir, exist_ok=True)
-    plt.figure(figsize=(8, 6))
+    # create a side-by-side figure: left PCA, right image grid
+    fig, (ax_pca, ax_imgs) = plt.subplots(1, 2, figsize=(14, 6), gridspec_kw={"width_ratios": [1, 1]})
 
-    # plot only the first 10 states
-    traj = np.array(pca_traj)[:num_states_to_plot]
+    # determine slice indices based on num_frames_to_plot (supports negative)
+    full_traj = np.array(pca_traj)
+    T = len(full_traj)
+    if num_frames_to_plot >= 0:
+        k = min(num_frames_to_plot, T)
+        start_idx = 0
+    else:
+        k = min(abs(num_frames_to_plot), T)
+        start_idx = max(0, T - k)
+
+    traj = full_traj[start_idx:start_idx + k]
     
-    # Plot points at each timestep
-    plt.scatter(traj[:, 0], traj[:, 1], s=50, alpha=0.7, zorder=5)
+    # Plot points at each timestep on PCA axis
+    ax_pca.scatter(traj[:, 0], traj[:, 1], s=50, alpha=0.7, zorder=5)
     
     # Highlight the first point with a different color
-    plt.scatter(traj[0, 0], traj[0, 1], s=100, color='green', alpha=0.9, zorder=6, label='Start')
+    ax_pca.scatter(traj[0, 0], traj[0, 1], s=100, color='green', alpha=0.9, zorder=6, label='Start')
     # Highlight the last point with a different color
-    plt.scatter(traj[-1, 0], traj[-1, 1], s=100, color='red', alpha=0.9, zorder=6, label='End')
+    ax_pca.scatter(traj[-1, 0], traj[-1, 1], s=100, color='red', alpha=0.9, zorder=6, label='End')
     
     # L2 norms for this trajectory (if provided)
     l2_first = np.array(l2_norms) if l2_norms is not None else None
+    # slice norms to match displayed points: norms length is T-1
+    if l2_first is not None:
+        l2_first = l2_first[start_idx:start_idx + max(0, k - 1)]
 
     # Add arrows between consecutive points
     for i in range(len(traj) - 1):
@@ -295,8 +314,8 @@ def plot_pca_trajectories(pca_traj, reconstruction_error=None, output_dir="pca_p
         x_end, y_end = traj[i + 1, 0], traj[i + 1, 1]
         dx = x_end - x_start
         dy = y_end - y_start
-        plt.arrow(x_start, y_start, dx, dy, 
-                  head_width=0.05, head_length=0.05, fc='black', ec='black', alpha=0.6, zorder=4)
+        ax_pca.arrow(x_start, y_start, dx, dy, 
+                 head_width=0.05, head_length=0.05, fc='black', ec='black', alpha=0.6, zorder=4)
         
         # Add label at midpoint of arrow: use L2 norm if available, otherwise index
         mid_x = x_start + dx / 2
@@ -305,21 +324,100 @@ def plot_pca_trajectories(pca_traj, reconstruction_error=None, output_dir="pca_p
             label_text = f"{l2_first[i]:.1f}"
         else:
             label_text = str(i+1)
-        plt.text(mid_x, mid_y, label_text, fontsize=8, ha='center', va='center', 
+        ax_pca.text(mid_x, mid_y, label_text, fontsize=8, ha='center', va='center', 
                 bbox=dict(boxstyle='round,pad=0.3', facecolor='yellow', alpha=0.7))
     
+    # Add index labels above each PCA point (use a different color than L2 labels)
+    # try:
+    #     y_min, y_max = ax_pca.get_ylim()
+    #     y_offset = (y_max - y_min) * 0.03
+    # except Exception:
+    #     y_offset = 0.02
+        for j in range(len(traj)):
+            px, py = traj[j, 0], traj[j, 1]
+            idx_label = str(j)
+            ax_pca.annotate(
+                idx_label,
+                xy=(px, py),
+                xytext=(0, 6),
+                textcoords='offset points',
+                ha='center',
+                va='bottom',
+                color='black',
+                fontsize=8,
+            )
+
     title = "PCA of CNN Feature Trajectories"
     if reconstruction_error is not None:
         title += f"\nReconstruction Error: {reconstruction_error:.4f}"
     
-    plt.title(title)
-    plt.xlabel("Principal Component 1")
-    plt.ylabel("Principal Component 2")
-    plt.legend()
+    ax_pca.set_title(title)
+    ax_pca.set_xlabel("Principal Component 1")
+    ax_pca.set_ylabel("Principal Component 2")
+    ax_pca.legend()
+    ax_pca.grid(True)
+
+    # Right: image grid. Use the provided `frames` list for this trajectory.
+    # `frames` is expected to be a list of frame stacks shape (4, H, W); use the
+    # first channel (index 0) of each stack as the grayscale image to display.
+    if frames is not None:
+        # slice frames to match displayed points
+        full_frames = list(frames)
+        frames_to_use = full_frames[start_idx:start_idx + k]
+        n = len(frames_to_use)
+        if n > 0:
+            imgs = []
+            for i in range(n):
+                stack = np.array(frames_to_use[i])  # (4, H, W)
+                img = stack[0]  # use first frame from the stack
+                # normalize to 0-255 if floats
+                if img.max() <= 1.0:
+                    img = (img * 255).astype(np.uint8)
+                imgs.append(img)
+
+            # build mosaic
+            cols = min(n, 5)
+            rows = int(np.ceil(n / cols))
+            H, W = imgs[0].shape
+            mosaic = np.ones((rows * H, cols * W), dtype=np.uint8) * 255
+            for idx in range(n):
+                r = idx // cols
+                c = idx % cols
+                mosaic[r*H:(r+1)*H, c*W:(c+1)*W] = imgs[idx]
+
+            ax_imgs.imshow(mosaic, cmap='gray', vmin=0, vmax=255)
+            ax_imgs.set_xticks([])
+            ax_imgs.set_yticks([])
+
+            # add index above each image (top-center inside image)
+            for idx in range(n):
+                r = idx // cols
+                c = idx % cols
+                x = c * W + W / 2
+                y = r * H + 6
+                ax_imgs.text(x, y, str(idx), color='white', fontsize=9, ha='center', va='top',
+                              bbox=dict(facecolor='black', alpha=0.6, pad=1))
+    else:
+        ax_imgs.text(0.5, 0.5, 'No frames provided', ha='center', va='center')
+
+    plt.tight_layout()
     plt.savefig(os.path.join(output_dir, "pca_trajectory.png"))
-    plt.grid()
     plt.show()
 
+def plot_grayscale_frame(frame):
+    frame = frame[0]
+    plt.imshow(frame)
+    plt.title("Grayscale Frame")
+    plt.axis('off')
+    plt.show()
+
+
+def get_wrapper(env, wrapper_type):
+    while isinstance(env, gym.Wrapper):
+        if isinstance(env, wrapper_type):
+            return env
+        env = env.env
+    return None
 
 
 def evaluate(
@@ -345,6 +443,7 @@ def evaluate(
     obs, _ = envs.reset()
     episodic_returns = []
     cnn_list = []
+    frames = []
 
     if run_rrt:
         run_rrt_exploration(model,
@@ -357,21 +456,28 @@ def evaluate(
     
     trajectories = []
     cur_traj = []
+    cur_traj_frames = []
 
     while len(episodic_returns) < eval_episodes:
         q_values = model(torch.Tensor(obs).to(device))
         actions = get_actions(q_values, best_action_prob=1.0)
+
         cnn_fts = activation['cnn_features']
-        x = cnn_fts
-        y = cnn_fts.detach().cpu().clone().numpy().squeeze()
-        cur_traj.append(y)
-        # if do_frame_cosine_similarity and (len(episodic_returns) == 0) and i > 500 and i < 1000:
-        #     cnn_list.append(cnn_fts.detach().cpu().clone())
-        # rewards are either -1, 0, 1
+        cnn_fts = cnn_fts.detach().cpu().clone().numpy().squeeze()
+        cur_traj.append(cnn_fts)
+
+        # plot_grayscale_frame(obs[0])  # visualize the original observation frame for this step
+        # return
+        cur_traj_frames.append(obs[0])  # save the original observation frame for this step
+        
         next_obs, rewards, terminations, truncations, infos = envs.step(actions)
         if rewards[0] != 0:
             trajectories.append(cur_traj[:])
             cur_traj = []
+            frames.append(cur_traj_frames[:])
+            cur_traj_frames = []
+            break
+
         if "final_info" in infos:
             for info in infos["final_info"]:
                 if "episode" not in info:
@@ -382,10 +488,13 @@ def evaluate(
     
     if do_frame_cosine_similarity:
         cnn_similarity(cnn_list, num_tests=100)
+
     pca_trajs, reconstruction_error, l2_norms = pca_trajectories(trajectories, n_components=2)
     # Pass a single PCA trajectory and its corresponding L2 norms to the plot
     single_l2 = l2_norms[0] if (l2_norms is not None and len(l2_norms) > 0) else None
-    plot_pca_trajectories(pca_trajs[0], reconstruction_error=reconstruction_error, l2_norms=single_l2)
+    single_frames = frames[0] if (frames is not None and len(frames) > 0) else None
+    plot_pca_trajectories(pca_trajs[0], reconstruction_error=None, 
+                          l2_norms=single_l2, frames=single_frames, num_frames_to_plot=-10)
     return episodic_returns
 
 

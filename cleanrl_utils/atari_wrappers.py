@@ -264,6 +264,28 @@ class WarpFrame(gym.ObservationWrapper[np.ndarray, int, np.ndarray]):
         frame = cv2.cvtColor(frame, cv2.COLOR_RGB2GRAY)
         frame = cv2.resize(frame, (self.width, self.height), interpolation=cv2.INTER_AREA)
         return frame[:, :, None]
+    
+
+class SaveOriginalObservation(gym.ObservationWrapper[np.ndarray, int, np.ndarray]):
+    """
+    Save the original observation for processing later.
+
+    :param env: Environment to wrap
+    """
+
+    def __init__(self, env: gym.Env) -> None:
+        super().__init__(env)
+        self.old_obs = None   # initialize
+
+    def observation(self, frame: np.ndarray) -> np.ndarray:
+        """
+        saves the original observation
+
+        :param frame: environment frame
+        :return: the observation
+        """
+        self.old_obs = frame
+        return frame
 
 
 class AtariWrapper(gym.Wrapper[np.ndarray, int, np.ndarray, int]):
