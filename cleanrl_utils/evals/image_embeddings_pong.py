@@ -121,7 +121,7 @@ def compute_MDS(embeddings: List[np.ndarray], similarity_metric: str = "euclidea
         ax_mds.text(x, y, str(i), fontsize=8)
 
     # draw arrows between consecutive points and label with 2D distance
-    if arrows:
+    if True:
         for i in range(len(X_transformed) - 1):
             x_start, y_start = X_transformed[i, 0], X_transformed[i, 1]
             x_end, y_end = X_transformed[i + 1, 0], X_transformed[i + 1, 1]
@@ -139,7 +139,8 @@ def compute_MDS(embeddings: List[np.ndarray], similarity_metric: str = "euclidea
             mid_y = y_start + dy / 2
             # use original-space pairwise distance matrix `D` computed above
             dist_orig = float(D[i, i + 1])
-            ax_mds.text(mid_x, mid_y, f"{dist_orig:.2f}", fontsize=8, ha='center', va='center', bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', alpha=0.6))
+            if arrows:
+                ax_mds.text(mid_x, mid_y, f"{dist_orig:.2f}", fontsize=8, ha='center', va='center', bbox=dict(boxstyle='round,pad=0.2', facecolor='yellow', alpha=0.6))
 
     ax_mds.axis("equal")
     ax_mds.set_title(f"{title}\nMetric MDS (2D) | metric={similarity_metric}\n{fc_text}")
@@ -172,7 +173,7 @@ def compute_MDS(embeddings: List[np.ndarray], similarity_metric: str = "euclidea
             if isinstance(frame, np.ndarray):
                 if frame.ndim == 3 and frame.shape[0] == 4:
                     # frame stack (C, H, W) - use first channel
-                    img = frame[0]
+                    img = frame[3]
                 elif frame.ndim == 3 and frame.shape[-1] == 3:
                     # RGB image (H, W, C)
                     img = frame
